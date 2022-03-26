@@ -1,0 +1,784 @@
+#include "my_tty.h"
+#include <stdio.h>
+#include "string.h"
+
+
+
+uint16_t tty_info;
+
+//函数名列表初始化(用户自己添加)
+//用户直接在这里输入要执行的函数名及其查找串
+__func_info func_info[]=
+{
+	(void*)uart_send_msg,"void uart_send_msg(uint8_t port,uint8_t* pdata,uint8_t msg_len)",
+};
+
+__smart_info smart_info=
+{
+	.funs = func_info,
+	.cmd_rec = usmart_cmd_rec,
+	.exe = usmart_exe,
+	.scan = usmart_scan,
+	.fnum = sizeof(func_info)/sizeof(__func_info),//函数数量
+	.pnum = 0,	  	//参数数量
+	.id = 0,	 	//函数ID
+	.sptype = 1,		//参数显示类型,0,10进制;1,16进制
+	.parmtype = 0,		//参数类型.bitx:,0,数字;1,字符串	    
+	.plentbl = 0,	  	//每个参数的长度暂存表,需要MAX_PARM个0初始化
+	.parm = 0,		//函数的参数,需要PARM_LEN个0初始化
+};   
+
+
+//系统命令
+uint8_t* sys_cmd_tab[]=
+{
+	(uint8_t*)"?",
+	(uint8_t*)"help",
+	(uint8_t*)"list",
+	(uint8_t*)"id",
+	(uint8_t*)"hex",
+	(uint8_t*)"dec",
+	(uint8_t*)"runtime",	   
+};
+//处理系统指令
+//0,成功处理;其他,错误代码;
+uint8_t usmart_sys_cmd_exe(uint8_t *str)
+{
+	uint8_t i;
+	uint8_t sfname[MAX_FNAME_LEN];//存放本地函数名
+	uint8_t pnum;
+	uint8_t rval;
+	uint32_t res;  
+	res = usmart_get_cmdname(str,sfname, &i, MAX_FNAME_LEN);//得到指令及指令长度
+	if(res)
+        return USMART_FUNCERR;//错误的指令 
+	str += i;
+	for(i = 0 ; i < sizeof(sys_cmd_tab) / 4 ; i++)//支持的系统指令
+	{
+		if(usmart_strcmp(sfname,sys_cmd_tab[i]) == 0)
+            break;
+	}
+	switch(i)
+	{
+		case 0:
+		case 1://帮助指令
+			printf("\r\n");
+#if USMART_USE_HELP 
+			printf("------------------------USMART V3.3------------------------ \r\n");
+			printf("    USMART是由ALIENTEK开发的一个灵巧的串口调试互交组件,通过 \r\n");
+			printf("它,你可以通过串口助手调用程序里面的任何函数,并执行.因此,你可\r\n");
+			printf("以随意更改函数的输入参数(支持数字(10/16进制,支持负数)、字符串\r\n"),
+			printf("、函数入口地址等作为参数),单个函数最多支持10个输入参数,并支持\r\n"),  
+			printf("函数返回值显示.支持参数显示进制设置功能,支持进制转换功能.\r\n");
+			printf("技术支持:www.openedv.com\r\n");
+			printf("USMART有7个系统命令(必须小写):\r\n");
+			printf("?:      获取帮助信息\r\n");
+			printf("help:   获取帮助信息\r\n");
+			printf("list:   可用的函数列表\r\n\n");
+			printf("id:     可用函数的ID列表\r\n\n");
+			printf("hex:    参数16进制显示,后跟空格+数字即执行进制转换\r\n\n");
+			printf("dec:    参数10进制显示,后跟空格+数字即执行进制转换\r\n\n");
+			printf("runtime:1,开启函数运行计时;0,关闭函数运行计时;\r\n\n");
+			printf("请按照程序编写格式输入函数名及参数并以回车键结束.\r\n");    
+			printf("--------------------------ALIENTEK------------------------- \r\n");
+#else
+			printf("指令失效\r\n");
+#endif
+			break;
+		case 2://查询指令
+			printf("\r\n");
+			printf("-------------------------函数清单--------------------------- \r\n");
+			for(i=0;i<smart_info.fnum;i++)
+                printf("%s\r\n",smart_info.funs[i].name);
+			printf("\r\n");
+			break;	 
+		case 3://查询ID
+			printf("\r\n");
+			printf("-------------------------函数 ID --------------------------- \r\n");
+			for(i=0;i<smart_info.fnum;i++)
+			{
+				usmart_get_fname((uint8_t*)smart_info.funs[i].name,sfname,&pnum,&rval);//得到本地函数名 
+				printf("%s id is:\r\n0X%08X\r\n",sfname,(uint32_t)smart_info.funs[i].func); //显示ID
+			}
+			printf("\r\n");
+			break;
+		case 4://hex指令
+			printf("\r\n");
+			usmart_get_aparm(str,sfname,&i);
+			if(i==0)//参数正常
+			{
+				i = usmart_str2num(sfname,&res);	   	//记录该参数	
+				if(i==0)						  	//进制转换功能
+					printf("HEX:0X%X\r\n",res);	   	//转为16进制
+                else if(i!=4)
+                    return USMART_PARMERR;//参数错误.
+				else 				   				//参数显示设定功能
+				{
+					printf("16进制参数显示!\r\n");
+					smart_info.sptype=SP_TYPE_HEX;  
+				}
+			}
+            else
+                return USMART_PARMERR;			//参数错误.
+			printf("\r\n"); 
+			break;
+		case 5://dec指令
+			printf("\r\n");
+			usmart_get_aparm(str,sfname,&i);
+			if(i==0)//参数正常
+			{
+				i=usmart_str2num(sfname,&res);	   	//记录该参数	
+				if(i==0)						   	//进制转换功能
+					printf("DEC:%u\r\n",res);	   	//转为10进制
+				else if(i!=4)
+                    return USMART_PARMERR;//参数错误.
+				else 				   				//参数显示设定功能
+				{
+					printf("10进制参数显示!\r\n");
+					smart_info.sptype=SP_TYPE_DEC;  
+				}
+
+			}
+            else 
+                return USMART_PARMERR;			//参数错误. 
+			printf("\r\n"); 
+			break;	 
+		case 6://runtime指令,设置是否显示函数执行时间
+			printf("\r\n");
+			usmart_get_aparm(str,sfname,&i);
+			if(i==0)//参数正常
+			{
+				i=usmart_str2num(sfname,&res);	   		//记录该参数	
+				if(i==0)						   		//读取指定地址数据功能
+				{
+					if(USMART_ENTIMX_SCAN==0)
+                        printf("\r\nError! \r\nTo EN RunTime function,Please set USMART_ENTIMX_SCAN = 1 first!\r\n");//报错
+					else
+					{
+						smart_info.runtimeflag=res;
+						if(smart_info.runtimeflag)
+                            printf("Run Time Calculation ON\r\n");
+						else 
+                            printf("Run Time Calculation OFF\r\n"); 
+					}
+				}
+                else 
+                    return USMART_PARMERR;   			//未带参数,或者参数错误	 
+ 			}
+            else 
+                return USMART_PARMERR;				//参数错误. 
+			printf("\r\n"); 
+			break;	    
+		default://非法指令
+			return USMART_FUNCERR;
+	}
+	return 0;
+}
+
+
+
+
+uint32_t my_pow(uint8_t base,uint8_t po)
+{
+    uint32_t tmp;
+    if(po == 0 && base != 0) 
+        return 1;
+	if(po == 1 || base == 0) 
+        return base;
+	if(po > 1)
+        tmp = base * my_pow(base, po - 1);
+	return tmp;
+}
+
+void ascii2hex_8bit(uint8_t* ascii, uint8_t* hex, uint8_t ascii_len, uint8_t overchar)
+{
+    uint8_t i = 0,hex_h,hex_l;
+    for(i = 0 ; i < ascii_len ; i += 2)
+    {
+        if(*(ascii + i) == ' ') //数据填充' '
+        {
+        }
+        if(overchar && (*(ascii + i) == overchar))
+            return;
+        if(*(ascii + i) <= '9' && *(ascii + i) >= '0')
+            hex_h = *(ascii + i) - '0';
+        else if(*(ascii + i) <= 'F' && *(ascii + i) >= 'A')
+            hex_h = *(ascii + i) - 'A' + 0x0A;
+        
+        if(*(ascii + i + 1) <= '9' && *(ascii + i + 1) >= '0')
+            hex_l = *(ascii + i + 1) - '0';
+        else if(*(ascii + i + 1) <= 'F' && *(ascii + i +1) >= 'A')
+            hex_l = *(ascii + i + 1) - 'A' + 0x0A;
+        
+        *hex++ = (hex_h << 4 & 0xF0) | (hex_l & 0x0F);
+    }
+}
+
+void ascii2hex(uint8_t* ascii, void* hex, uint8_t hex_type, uint16_t ascii_len, uint16_t anasy_method)
+{
+    uint8_t i,j,hex_tmp[hex_type],method[hex_type],*tmp,*hex_u8 = hex;
+    if(anasy_method == 0)
+    {
+        //使用默认方法解析
+        if(hex_type == sizeof(uint8_t))
+            anasy_method = 1;
+        else if(hex_type == sizeof(uint16_t))
+            anasy_method = 21;
+        else if(hex_type == sizeof(uint32_t))
+            anasy_method = 4321;
+        else
+            return;
+    }
+//    for(i = 0 ; i < hex_type ; i++)
+//    {
+//        method[i] = anasy_method / my_pow(10, hex_type - i - 1);
+//        anasy_method = anasy_method % my_pow(10, hex_type - i - 1);
+//    }
+    for(i = 0 ; i < hex_type ; i++)
+    {
+        method[i] = anasy_method % my_pow(10, 1);
+        anasy_method = anasy_method / my_pow(10, 1);
+    }
+    for(i = 0 ; i < ascii_len / (hex_type * 2) ; i++)
+    {
+        //tmp = ((uint8_t*)hex) + i * hex_type;
+        tmp = hex_u8 + i * hex_type;
+        ascii2hex_8bit(ascii + i * hex_type * 2, hex_tmp, hex_type * 2, NULL);
+        for(j = 0 ; j < hex_type ; j++)
+        {
+            tmp[j] = hex_tmp[method[j] - 1];
+        }
+    }
+}
+
+
+char* skip_mark(char* str, char* str_lim, char mark, int8_t step)
+{
+    while(1)
+    {
+		if(*str != mark)
+            return str;
+		else if(*str == '\0' || str == str_lim)
+            return NULL;
+		else;
+        str += step;
+    }
+//	while(1)
+//    {
+//        if(*str == mark)
+//        {
+//			if(*str == '\0' || str == str_lim)
+//				return NULL;
+//			str += step;
+//            continue;
+//        }
+//        return str;
+//    }
+//    return NULL;
+}
+/*****************************************************************************
+ * 函 数 名  : skip_marks
+ * 负 责 人  : 吾奶常扇赵子龙
+ * 创建日期  : 2021年12月6日
+ * 函数功能  : 跳到 str到str_lim或者字符串结束的字符串中-
+                   不是marks的位置
+ * 输入参数  : char* str  	      字符串首地址
+               char* str_lim  字符结束限制地址
+               char* marks    需要跳过的符号组成的字符串
+               int8_t step    步长：±1
+ * 输出参数  : 无
+ * 返 回 值  : 跳到的地址
+ * 调用关系  : 
+ * 其    它  : 
+
+*****************************************************************************/
+char* skip_marks(char* str, char* str_lim, char* marks, int8_t step)
+{
+	uint8_t i,mark_num;
+	mark_num = strlen(marks);
+    while(1)
+    {
+		for(i = 0 ; i < mark_num ; i++)
+        {
+            if(*str == marks[i])
+            {
+				if(*str == '\0' || str == str_lim)
+					return NULL;
+				str += step;
+                continue;
+            }
+        }
+        return str;
+    }
+}
+
+
+//跳到字符串中指定字符的地址
+char* find_mark(char* str, char* str_lim, char mark, int8_t step)
+{
+    do{
+        if(*str == mark)
+            return str;
+		else if(*str == '\0' || str == str_lim)
+            return NULL;
+		else;
+        str += step;
+    }while(1);
+}
+
+/*****************************************************************************
+ * 函 数 名  : find_marks
+ * 负 责 人  : 吾奶常扇赵子龙
+ * 创建日期  : 2021年12月2日
+ * 函数功能  : 查询字符串中首次出现某些字符的位置
+ * 输入参数  : char* str         字符串首地址
+               char* marks       需要查询的字符数组
+ * 输出参数  : 无
+ * 返 回 值  : 查询到的字符位置
+ * 调用关系  : 
+ * 其    它  : 马新响
+
+*****************************************************************************/
+char* find_marks(char* str, char* str_lim, char* marks, int8_t step)
+{
+    uint8_t i,mark_num;
+	mark_num = strlen(marks);
+    do{
+        for(i = 0 ; i < mark_num ; i++)
+        {
+            if(*str == marks[i])
+                return str;
+        }
+		if(*str == '\0' || str == str_lim)
+            return NULL;
+		str += step;
+    }while(1);
+}
+
+//从某段字符中获取指定字符最后一次出现的位置
+char* find_last_mark(char* str_s, char* str_e, char mark)
+{
+    do{
+        if(*str_s == mark)
+            return str_s;
+		if(!str_e)
+		{
+			if(*str_s == '\0')
+            	break;
+
+		}
+		else
+		{
+			if(++str_s > str_e)
+				break;
+		}
+    }while(1);
+    return NULL;
+}
+
+/*****************************************************************************
+ * 函 数 名  : conver_para_type
+ * 负 责 人  : 吾奶常扇赵子龙
+ * 创建日期  : 2021年12月6日
+ * 函数功能  : 根据声明中参数字符串获取参数类型
+ * 输入参数  : char* para_str      参数的首地址
+               uint8_t* para_type  存放参数类型
+ * 输出参数  : 无
+ * 返 回 值  : 0xFF: ERR
+ * 调用关系  : 
+ * 其    它  : 
+
+*****************************************************************************/
+uint8_t conver_para_type(char* para_str, uint8_t* para_type)
+{
+	char* point;
+	uint8_t type_tmp;
+	__para_type* type;
+	if(para_type)
+		type = (__para_type*)para_type;
+	else
+		type = (__para_type*)&type_tmp;
+	type->is_point = 0;
+	type->type = PARA_VOID;
+	point = find_mark(para_str, NULL, '*', 1);
+	if(point)
+		type->is_point = 1;
+	if(memcmp(para_str, "uint8_t", sizeof("uint8_t")) == 0)
+		type->type = PARA_UINT8_T;
+	else if(memcmp(para_str, "uint16_t", sizeof("uint16_t")) == 0)
+		type->type = PARA_UINT16_T;
+	else if(memcmp(para_str, "uint32_t", sizeof("uint32_t")) == 0)
+		type->type = PARA_UINT32_T;
+	else if(memcmp(para_str, "float", sizeof("float")) == 0)
+		type->type = PARA_FLOAT;
+	else if(memcmp(para_str, "void", sizeof("void")) == 0)
+		type->type = PARA_VOID;
+	else
+		return 0xFF;
+	return *(uint8_t*)type;
+}
+
+//获取函数返回值类型
+/*****************************************************************************
+ * 函 数 名  : get_func_ret_type
+ * 负 责 人  : 吾奶常扇赵子龙
+ * 创建日期  : 2021年12月2日
+ * 函数功能  : 获取函数返回值类型
+ * 输入参数  : char* str          字符串起始地址
+               uint8_t* ret_type  函数返回值类型
+ * 输出参数  : 无
+ * 返 回 值  : 函数名字符起始地址
+ * 调用关系  : 
+ * 其    它  : 
+
+*****************************************************************************/
+char* get_func_ret_type(char* str, uint8_t* ret_type)
+{
+    char *str_soi,*str_eoi,type[8];
+	__para_type* ret_info = (__para_type*)ret_type;
+	*ret_type = 0;
+    //跳过指定符号
+    str_soi = skip_mark((char*)str, NULL, ' ', 1);
+    //查找返回值类型结束位置
+    str_eoi = find_marks(str_soi, NULL, " *", 1);
+	//获取返回类型符号
+	memcpy(type, str_soi, str_eoi - str_soi);
+    //返回值是否为指针
+	str_eoi = skip_mark(str_eoi, NULL, ' ', 1);
+	if(*str_eoi == '*')
+	{
+		ret_info->is_point = 1;
+		//跳到函数名字位置
+		str_eoi = skip_mark(str_eoi, NULL, ' ', 1);
+	}
+	return str_eoi;
+}
+
+//从字符串中获取函数名
+//str: 该起始位置应当为返回类型结束位置(get_func_ret_type()的返回地址)
+char* get_func_name_1(char* str, char* func_name)
+{
+    char *str_soi,*str_eoi;
+	//跳过空格，到函数名起始位置
+	str_soi = skip_mark(str, NULL, ' ', 1);
+	//找到函数名结束位置
+    str_eoi = find_marks(str_soi, NULL, " (", 1);
+    if(!str_eoi)
+        return NULL;
+    memcpy(func_name, str_soi, str_eoi - str_soi);
+	//函数名字符串加上结束标志符号
+	func_name[str_eoi - str_soi] = '\0';
+	//跳过空格，到函数参数的'('位置
+	if(*str_eoi == ' ')
+		str_eoi = skip_mark(str_eoi, NULL, ' ', 1);
+    return str_eoi;                         //返回查找结束的地址
+}
+
+/*****************************************************************************
+ * 函 数 名  : get_func_name
+ * 负 责 人  : 吾奶常扇赵子龙
+ * 创建日期  : 2021年12月6日
+ * 函数功能  : 从字符串中提取函数名
+ * 输入参数  : char* str        函数声明或者函数调用的字符串
+               char* func_name  保存函数名的地址
+ * 输出参数  : 无
+ * 返 回 值  : 函数名的起始地址
+ * 调用关系  : 
+ * 其    它  : 
+
+*****************************************************************************/
+char* get_func_name(char* str, char* func_name)
+{
+    char *str_soi,*str_eoi;
+	uint8_t name_len;
+	//找到函数名结束位置
+    str_eoi = find_mark(str, NULL, '(', 1);
+	//跳过函数结束位置后面的空格
+	str_eoi = skip_mark(str_eoi, NULL, ' ', -1);
+	//查找函数名起始位置
+	str_soi = find_marks(str_eoi, str, " *", -1);
+	//将str_soi指向函数名起始地址
+	if(str_soi == NULL)
+		str_soi = str;
+	else
+		str_soi++;
+	name_len = str_eoi - str_soi;
+	memcpy(func_name, str_soi, name_len);
+	//函数名字符串加上结束标志符号
+	func_name[name_len] = '\0';
+	//查询失败
+	if(str_eoi == str_soi)
+		return NULL;
+	//返回函数名起始地址
+	return str_soi;
+}
+
+//定位到函数的第n个参数首地址(n: 1~x)
+char* skip_func_para_n(char* str, uint8_t para_n, uint8_t* para_len)
+{
+	char *str_soi,*str_eoi;
+	int8_t depth = 0;
+	uint8_t para_num = 0;
+	while(1)
+	{
+		if(*str == '\0')
+			return NULL;
+		else if(*str == '(' && ++depth == 1)
+			str_soi = skip_mark(str + 1, NULL, ' ', 1);			//记录第一个参数的起始位置
+		else if(*str == ')' && depth > 1)
+			depth--;
+		else if((*str == ',' || *str == ')') && depth == 1)		//参数结束位置
+		{
+			str_eoi = skip_mark(str, NULL, ' ', -1);
+			if(str_eoi > str_soi)
+				para_num++;
+			else if(str_eoi <= str_soi && *str != ')')			//需要该参数，而该参数为空
+				return NULL;
+			else{}
+			if(*str == ',')
+				str_soi = skip_mark(str + 1, NULL, ' ', 1);		//记录下一个参数的起始位置
+			if(*str == ')')
+				depth--;										//最后一个')'
+		}
+		else{}
+		if(para_n == para_num)
+		{
+			*para_len = str_eoi - str_soi;
+			return str_soi;
+		}
+		str++;
+	}
+}
+
+/*****************************************************************************
+ * 函 数 名  : get_func_para_num
+ * 负 责 人  : 吾奶常扇赵子龙
+ * 创建日期  : 2021年12月6日
+ * 函数功能  : 从函数声明或者函数调用中获取函数的参数个数
+ * 输入参数  : char* str          函数声明或者函数调用的字符串
+               uint8_t* para_num  保存函数参数个数的变量地址
+ * 输出参数  : 无
+ * 返 回 值  : 0：获取函数名成功
+ * 调用关系  : 
+ * 其    它  : 
+
+*****************************************************************************/
+uint8_t get_func_para_num(char* str, uint8_t* para_num)
+{
+	char *str_soi,*str_eoi;
+	int8_t depth = 0;
+	*para_num = 0;
+	while(1)
+	{
+		if(*str == '\0')
+		{
+			if(depth != 0)
+				return 1;										//ERR；"()"使用不对成
+			else
+				return 0;
+		}
+		else if(*str == '(' && ++depth == 1)
+			str_soi = skip_mark(str + 1, NULL, ' ', 1);			//记录第一个参数的起始位置
+		else if(*str == ')' && depth > 1)
+			depth--;
+		else if((*str == ',' || *str == ')') && depth == 1)		//参数结束位置
+		{
+			str_eoi = skip_mark(str, NULL, ' ', -1);
+			if(str_eoi > str_soi)
+				(*para_num)++;
+			if(*str == ',')
+				str_soi = skip_mark(str + 1, NULL, ' ', 1);		//记录下一个参数的起始位置
+			if(*str == ')')
+				depth--;										//最后一个')'
+		}
+		else{}
+		str++;
+	}
+}
+
+/*****************************************************************************
+ * 函 数 名  : get_depth_para
+ * 负 责 人  : 吾奶常扇赵子龙
+ * 创建日期  : 2021年12月6日
+ * 函数功能  : 从str地址开始获取第一个参数
+ * 输入参数  : char* str          	  字符串首地址
+               char** para        记录参数在字符串中的地址,需要修改实参指针指向
+               uint8_t* para_len  参数长度
+ * 输出参数  : 无
+ * 返 回 值  : 
+ * 调用关系  : 
+ * 其    它  : 
+
+*****************************************************************************/
+char* get_depth_para(char* str, char** para, uint8_t* para_len)
+
+{
+	uint8_t depth = 0;
+	char *str_soi,*str_eoi;
+	str_soi = skip_mark(str, NULL, ' ', 1);
+	*para = str_soi;
+	while(1)
+	{
+		//参数个数错误，括号数不对等
+		if(*str == '\0')
+			return NULL;
+		else if(*str == '(')
+			depth++;
+		else if(depth && *str == ')')
+			depth--;
+		else if((*str == ',' || *str == ')') && !depth)
+		{
+			str_eoi = skip_mark(str, NULL, ' ', -1);
+			if(para_len)
+				*para_len = str_eoi - str_soi;
+			break;
+		}
+		else{}
+		str++;
+	}
+	return str;
+}
+
+//根据函数声明信息获取参数类型
+char* get_func_para_type(char* str, uint8_t* para_type)
+{
+    
+}
+
+//根据函数调用内容获取参数值
+char* get_func_para_val(char* str, void* para_val)
+{
+    char* str_eoi;
+    uint8_t para_type;
+    //
+    
+    str_eoi = get_func_para_type(str, &para_type);
+}
+
+/*****************************************************************************
+ * 函 数 名  : get_para
+ * 负 责 人  : 吾奶常扇赵子龙
+ * 创建日期  : 2021年12月6日
+ * 函数功能  : 根据函数调用与函数声明的内容获取参数类型
+ * 输入参数  : char* str_recv      接收到的字符串中第n个参数的首地址
+               char* str_decl      声明中第n个参数的首地址
+               void* para_val      保存参数值的地址
+               uint8_t* para_type  保存参数类型的地址：参数类型sizeof(变量类型)
+               uint8_t para_len    参数长度
+ * 输出参数  : 无
+ * 返 回 值  : 
+ * 调用关系  : 
+ * 其    它  : 
+
+*****************************************************************************/
+char* get_para(char* str_recv, char* str_decl, void* para_val, uint8_t* para_type, uint8_t para_len)
+{
+	char *str_call_para, *str_decl_para, type[10], val[20];
+	uint8_t i, ret_stat, call_para_len, decl_para_len;
+	for(i = 0 ; i < para_num ; i++)
+	{
+		str_call_para = skip_func_para_n(str_recv, i, &call_para_len);
+		str_decl_para = skip_func_para_n(str_decl, i, &decl_para_len);
+		if(str_call_para == NULL || str_decl_para == NULL)
+			return NULL;		//ERR
+		memcpy(type, str_decl_para, decl_para_len);
+		memcpy(val , str_call_para, call_para_len);
+		ret_stat = conver_para_type(type, para_type);
+		if(ret_stat == 0xFF)
+			return NULL;		//ERR
+		
+	}
+}
+
+
+
+/*****************************************************************************
+ * 函 数 名  : matching_func_name
+ * 负 责 人  : 吾奶常扇赵子龙
+ * 创建日期  : 2021年12月6日
+ * 函数功能  : 调用的函数名与所有已注册的函数名进�-
+                   �匹配
+ * 输入参数  : char* func_name          接收到的函数名
+               uint8_t* matching_index  该地址保存了：所有已注册声明中与给定函数名相同的声明所在的index
+ * 输出参数  : 无
+ * 返 回 值  : 0：匹配成功
+ * 调用关系  : 
+ * 其    它  : 
+
+*****************************************************************************/
+uint8_t matching_func_name(char* func_name, uint8_t* matching_index)
+{
+	uint8_t index;
+    char *str;
+	char regi_func_name[20];				//本地已经注册的函数名
+    for(index = 0 ; index < sizeof(func_info) / sizeof(__func_info) ; index++)
+    {
+		//第一次使用需要从函数声明中获取函数名指针以及函数名长度
+        if(func_info[index].name == NULL)
+        {
+			str = func_info[index].declaration;
+			//获取函数声明中函数名
+			str = get_func_name(str, regi_func_name);
+			if(str)
+			{
+				func_info[index].name = str;
+				func_info[index].name_len = strlen(regi_func_name);
+			}
+			//函数声明中格式有误，查询不到函数名，查询下一声明
+			else
+				continue;
+		}
+		//函数名长度不同，则跳过进行下一匹配
+		if(func_info[index].name_len != strlen(regi_func_name))
+			continue;
+		//函数名匹配判断
+		if(0 == memcmp(func_info[index].name, regi_func_name, func_info[index].name_len))
+		{
+			*matching_index = index;
+			return 0;
+		}
+    }
+	//err, 本地注册的函数中没有指定的函数
+	return 1;
+}
+
+//响应函数命令
+void response_func_cmd(char* str)
+{
+    char *str_soi,*str_eoi;
+	uint8_t	matching_index,ret_type,decl_para_num,recv_para_num;
+    char recv_func_name[20];                //接收到的指令中的函数名
+    char regi_func_name[20];				//本地已经注册的函数名
+    //跳过指定符号
+    str_soi = skip_mark(str, NULL, ' ', 1);
+    //从接下来的数据中获取函数名
+    str_soi = get_func_name(str_soi, recv_func_name);
+	if(!str_soi)
+		return;								//函数名提取出错
+    //查找本地函数名与接收到的函数名相同的函数的index
+	if(matching_func_name(recv_func_name, &matching_index))
+		return;	
+    //获取参数个数
+    if(get_func_para_num(str, &decl_para_num) || get_func_para_num(func_info[matching_index].declaration, &recv_para_num))
+    	return;								//参数格式不正确
+    //接收到的参数是否与声明的参数匹配
+    if(decl_para_num != recv_para_num)
+		return;
+	//根据index中的函数声明获取函数返回类型
+	get_func_ret_type(func_info[matching_index].declaration, &ret_type);
+	//获取参数
+
+	
+}
+
+
+
+
+
+
+
+
+
+
+
+

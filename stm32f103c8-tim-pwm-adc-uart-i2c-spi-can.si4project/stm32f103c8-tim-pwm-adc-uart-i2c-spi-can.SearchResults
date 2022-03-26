@@ -1,0 +1,5 @@
+---- HSE_STARTUP_TIMEOUT Matches (4 in 2 files) ----
+stm32f1xx_hal_conf.h (Core\Inc) line 89 : #if !defined  (HSE_STARTUP_TIMEOUT)
+stm32f1xx_hal_conf.h (Core\Inc) line 90 :   #define HSE_STARTUP_TIMEOUT    100U   /*!< Time out for HSE start up, in ms */
+stm32f1xx_hal_conf.h (Core\Inc) line 91 : #endif /* HSE_STARTUP_TIMEOUT */
+stm32f1xx_hal_rcc.h (Drivers\STM32F1xx_HAL_Driver\Inc) line 1206 : #define HSE_TIMEOUT_VALUE              HSE_STARTUP_TIMEOUT
